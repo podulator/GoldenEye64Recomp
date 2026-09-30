@@ -29,5 +29,24 @@ if ! kill -0 $PID 2>/dev/null; then
     exit 1
 fi
 
+# spectacle can only capture the active window, so bring the game's window to the front first (KWin on
+# Wayland has no other way to address a window). Without KWin this is skipped and the shot may be wrong
+# if another window has focus.
+if command -v qdbus >/dev/null 2>&1; then
+    SCRIPT=$(mktemp --suffix=.js)
+    cat >"$SCRIPT" <<'EOF'
+for (const w of workspace.windowList()) {
+    if (w.caption.indexOf("Goldeneye 007") === 0) {
+        workspace.activeWindow = w;
+    }
+}
+EOF
+    qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$SCRIPT" ge-harness-activate >/dev/null 2>&1 &&
+        qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1
+    qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript ge-harness-activate >/dev/null 2>&1
+    rm -f "$SCRIPT"
+    sleep 0.5
+fi
+
 spectacle --background --nonotify --activewindow --output "$OUT"
 echo "$OUT"
