@@ -76,6 +76,9 @@ RECOMP_PATCH Gfx* skyRenderFull(Gfx* gdl, SkyRelated38* arg1, SkyRelated38* arg2
  */
 #define SKY_VTX_RANGE 32000.0f
 #define SKY_TC_PERIOD (256.0f * 32.0f)
+// Water texture coordinates are stored divided by this and restored with tile shift 12 (x16).
+#define SKY_WATER_TC_DIV 16.0f
+#define SKY_WATER_TILE_SHIFT 12
 
 static f32 skyAbs(f32 v) {
     return v < 0.0f ? -v : v;
@@ -189,8 +192,10 @@ static Gfx* skyDrawPolygon(Gfx* gdl, SkyRelated18* src, s32 count, f32 scale, en
         verts[i].v.flag = 0;
 
         if (water) {
-            tc_s[i] = src[i].unk0c * 0.1f + g_SkyCloudOffset;
-            tc_t[i] = (src[i].unk10 - g_SkyCloudOffset) * 0.1f + g_SkyCloudOffset;
+            // Same texture coordinates as the RDP path (unk0c/unk10 are s10.5 there), stored /16 to fit s16
+            // across a whole plane; the tiles below scale them back up.
+            tc_s[i] = src[i].unk0c / SKY_WATER_TC_DIV;
+            tc_t[i] = src[i].unk10 / SKY_WATER_TC_DIV;
         } else {
             tc_s[i] = src[i].unk0c;
             tc_t[i] = src[i].unk10;
@@ -228,6 +233,11 @@ static Gfx* skyDrawPolygon(Gfx* gdl, SkyRelated18* src, s32 count, f32 scale, en
     if (water) {
         gDPSetCycleType(gdl++, G_CYC_2CYCLE);
         gDPSetRenderMode(gdl++, G_RM_PASS, G_RM_OPA_SURF2);
+        // As sub_GAME_7F09343C sets them up, plus the shift that undoes SKY_WATER_TC_DIV.
+        gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 4, 0, 0, 0, 0, 5, SKY_WATER_TILE_SHIFT, 0, 5,
+                   SKY_WATER_TILE_SHIFT);
+        gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 4, 0, 1, 0, 0, 5, SKY_WATER_TILE_SHIFT, 0, 5,
+                   SKY_WATER_TILE_SHIFT);
     } else {
         gDPSetCycleType(gdl++, G_CYC_1CYCLE);
         gDPSetRenderMode(gdl++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
@@ -260,6 +270,10 @@ static Gfx* skyDrawPolygon(Gfx* gdl, SkyRelated18* src, s32 count, f32 scale, en
 
     gSPPopMatrix(gdl++, G_MTX_MODELVIEW);
     gDPPipeSync(gdl++);
+    if (water) {
+        gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 4, 0, 0, 0, 0, 5, 0, 0, 5, 0);
+        gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 4, 0, 1, 0, 0, 5, 0, 0, 5, 0);
+    }
     gEXPopOtherMode(gdl++);
     gEXPopGeometryMode(gdl++);
 
