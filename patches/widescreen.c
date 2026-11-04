@@ -426,7 +426,11 @@ RECOMP_PATCH Gfx* chrobjRenderProp(PropRecord* prop, Gfx* gdl, s32 arg2) __attri
 
 #endif
 
-// Intro GunBarrel stretch fix
+// The gun barrel's spiral, in the intro and behind the file select's folders: a picture 440 wide, the front end's 4:3
+// width, which the game draws a row at a time from x to the screen's right edge, x sliding it in from the right in the
+// intro. Its first and last columns are black (the file select tints them grey), and the 4:3 view shows its spiral
+// end in black on both sides as the intro's barrel pans, so a wider view gets the rows to the window's edges, the
+// first column repeated left of the picture and the last right of it (s clamps to them).
 #if 1
 extern f32 D_8002BB00;
 extern f32 D_8002BB04;
@@ -441,59 +445,65 @@ struct FolderSelect {
     s32 unk08;
 };
 
-extern f32 D_8002BB00;
-extern f32 D_8002BB04;
-extern f32 D_8002BB08;
-extern f32 D_8002BB0C;
-extern f32 D_8002BB10;
-extern f32 D_8002BB14;
+#define BARREL_WIDTH 440
+#define BARREL_ROWS 299
 
-RECOMP_PATCH Gfx* titleRenderFolderMenuBackgroundLines(Gfx* gdl, s32 imgIndex, s32 x, struct FolderSelect* arg3,
-                                    struct FolderSelect* arg4) {
-    f32 temp_f0;
-    f32 temp_f12;
-    f32 temp_f14;
-    f32 temp_f14_2;
-    f32 temp_f16;
-    f32 temp_f18;
-    f32 temp_f2;
+// One row of the picture, from left to right (the front end's x, 0-440 the 4:3 view) and top to bottom (quarter
+// pixels), its texels from s (texels) by dsdx a front-end unit.
+static Gfx* barrelRow(Gfx* gdl, f32 left, f32 right, s32 top, s32 bottom, f32 s, f32 dsdx) {
+    gEXTextureRectangle(gdl++, G_EX_ORIGIN_CENTER, G_EX_ORIGIN_CENTER, (s32) ((left - 220.0f) * 4.0f), top,
+                        (s32) ((right - 220.0f) * 4.0f), bottom, G_TX_RENDERTILE, (s32) (s * 32.0f), 0,
+                        (s32) (dsdx * 1024.0f), 1 << 10);
+
+    return gdl;
+}
+
+// The picture is 299 rows, drawn from row 16 of the front end's 330, so the window shows black above and below it.
+// Behind the file select it is zoomed by 330 / 299 about the view's middle, to fill the window's height (its rows 0-299
+// over 0-330), and wider in proportion; not in the intro, whose sight and iris are drawn at the picture's hole.
+RECOMP_PATCH Gfx* titleRenderFolderMenuBackgroundLines(Gfx* gdl, s32 image, s32 x, struct FolderSelect* top,
+                                                       struct FolderSelect* bottom) {
+    f32 r0 = top->unk00;
+    f32 g0 = top->unk04;
+    f32 b0 = top->unk08;
+    f32 r1 = bottom->unk00;
+    f32 g1 = bottom->unk04;
+    f32 b1 = bottom->unk08;
+    s32 zoomed = current_menu == MENU_FILE_SELECT;
+    f32 zoom = zoomed ? (330.0f / BARREL_ROWS) : 1.0f;
+    // The view's edges in the front end's x, a column past them.
+    s32 half = (s32) (165.0f * recomp_get_aspect_ratio(4.0f / 3.0f)) + 1;
+    f32 left = 220 - half;
+    f32 right = 220 + half;
+    // The picture's left edge zoomed, and its column at the view's left edge.
+    f32 start = 220.0f + ((x - 220.0f) * zoom);
+    f32 s = (left - start) / zoom;
     s32 i;
-    s32 var_t1;
 
-    temp_f0 = arg3->unk00;
-    temp_f2 = arg3->unk04;
-    temp_f12 = arg3->unk08;
-    temp_f14 = arg4->unk00;
-    temp_f16 = arg4->unk04;
-    temp_f18 = arg4->unk08;
-    D_8002BB0C = temp_f14;
-    D_8002BB10 = temp_f16;
-    D_8002BB14 = temp_f18;
+    D_8002BB0C = r1;
+    D_8002BB10 = g1;
+    D_8002BB14 = b1;
     gEXEnable(gdl++);
-    i = 0;
-    while ((i + 1) < 300) {
-        gDPLoadTextureBlock(gdl++, imgIndex, G_IM_FMT_I, G_IM_SIZ_8b, 440, 1, 0, G_TX_NOMIRROR | G_TX_CLAMP,
-                            G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+    gEXSetScissor(gdl++, G_SC_NON_INTERLACE, G_EX_ORIGIN_LEFT, G_EX_ORIGIN_RIGHT, 0, 0, 0, viGetY());
 
-        gDPSetPrimColor(gdl++, 0, 0, temp_f0 + (((temp_f14 - temp_f0) * i) / 299.0f),
-                        temp_f2 + (((temp_f16 - temp_f2) * i) / 299.0f),
-                        temp_f12 + (((temp_f18 - temp_f12) * i) / 299.0f), 255);
+    for (i = 0; i < BARREL_ROWS; i++) {
+        s32 rowTop = zoomed ? ((i * 330 * 4) / BARREL_ROWS) : ((i + 0x10) * 4);
+        s32 rowBottom = zoomed ? (((i + 1) * 330 * 4) / BARREL_ROWS) : ((i + 0x11) * 4);
 
-        if (x < 0) {
-            gEXTextureRectangle(gdl++, G_EX_ORIGIN_CENTER, G_EX_ORIGIN_CENTER, 0 - 880, (i + 0x10) << 2,
-                                ((440 << 2) - 1) - 880, ((((i + 1) + 0x10)) << 2) - 1, G_TX_RENDERTILE, (-x) << 5, 0,
-                                1 << 10, 1 << 10);
-        } else {
-            gEXTextureRectangle(gdl++, G_EX_ORIGIN_CENTER, G_EX_ORIGIN_CENTER, (x << 2) - 880, (i + 0x10) << 2,
-                                ((440 << 2) - 1) - 880, ((((i + 1) + 0x10)) << 2) - 1, G_TX_RENDERTILE, 0, 0, 1 << 10,
-                                1 << 10);
-        }
-        i++;
-        imgIndex += 440;
+        gDPLoadTextureBlock(gdl++, image + (i * BARREL_WIDTH), G_IM_FMT_I, G_IM_SIZ_8b, BARREL_WIDTH, 1, 0,
+                            G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK,
+                            G_TX_NOLOD, G_TX_NOLOD);
+        gDPSetPrimColor(gdl++, 0, 0, r0 + (((r1 - r0) * i) / 299.0f), g0 + (((g1 - g0) * i) / 299.0f),
+                        b0 + (((b1 - b0) * i) / 299.0f), 255);
+
+        // The picture, its first column left of it and its last right of it.
+        gdl = barrelRow(gdl, left, right, rowTop, rowBottom, s, 1.0f / zoom);
     }
-    D_8002BB08 = temp_f12;
-    D_8002BB04 = temp_f2;
-    D_8002BB00 = temp_f0;
+
+    gDPSetScissor(gdl++, G_SC_NON_INTERLACE, 0, 0, viGetX(), viGetY());
+    D_8002BB08 = b0;
+    D_8002BB04 = g0;
+    D_8002BB00 = r0;
 
     return gdl;
 }

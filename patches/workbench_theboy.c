@@ -5,12 +5,28 @@ int demoMode = 0;
 void waitForNextFrame2();  // @theboy181 - Improtant for proper fps
 Gfx* originTagFrame(Gfx* gdl); // patches/origin_interpolation.c
 #if 1
+// @recomp: a view wider than 4:3 shows more at its sides, where the dots of the intro's first part would show from
+// the start and vanish before its edge, and the barrel would show its first columns at once beside the 4:3 view. So
+// each is drawn with its x (g_TitleX and titleTransitionX, 0-1280 across the 4:3 view) spread out as much as the view
+// is wider: the dots about the view's middle, so they cross the whole view, and the barrel's first stretch, so it
+// slides in from the view's edge. Its frames and their timing stay the game's.
+static f32 introWider(void) {
+    return recomp_get_aspect_ratio(4.0f / 3.0f) * 0.75f;
+}
+
 RECOMP_PATCH Gfx *renderGunbarrelEyeIntroSequence(Gfx *gdl) {
+    f32 titleX = g_TitleX;
+    f32 transitionX = titleTransitionX;
+    f32 wider = introWider();
     D_8002A7D0 = (1 - D_8002A7D0);
     switch (gunbarrel_mode - 2)
     {
     case 0:
+        g_TitleX = 640.0f + ((titleX - 640.0f) * wider);
+        titleTransitionX = 640.0f + ((transitionX - 640.0f) * wider);
         gdl = manipulateGunbarrelAndLogoMatrices(gdl);
+        g_TitleX = titleX;
+        titleTransitionX = transitionX;
         g_TitleX += XINC;
         if (word_CODE_bss_80069584 < 0) {
             word_CODE_bss_80069584 = 200;
@@ -37,12 +53,20 @@ RECOMP_PATCH Gfx *renderGunbarrelEyeIntroSequence(Gfx *gdl) {
         gdl = clear_framebuffer_black(gdl++);
         gdl = clear_framebuffer_black(gdl++);
 #endif
+        // The barrel starts at 1276, its first column at the 4:3 view's right edge: from the wider view's edge, and
+        // as the game draws it from 600 on, where Bond is drawn in its hole (his own walk, not the barrel's x).
+        if (titleX > 600.0f) {
+            f32 f = (titleX - 600.0f) / 676.0f;
+
+            g_TitleX = titleX + ((1280.0f * 220.0f * (wider - 1.0f) / 440.0f) * f * f);
+        }
         gdl = insert_sniper_sight_eye_intro(gdl++);
         gdl = insert_sight_backdrop_eye_intro(gdl++);
         
-        if (g_TitleX < 600.0f) {
+        if (titleX < 600.0f) {
             gdl = insert_bond_eye_intro(gdl);
         }
+        g_TitleX = titleX;
         g_TitleX -= XDEC3;
         if (g_TitleX <= -80.0f) {
             gunbarrel_mode++;
