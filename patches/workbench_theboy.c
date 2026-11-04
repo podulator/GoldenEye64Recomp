@@ -2,6 +2,84 @@
 
 int demoMode = 0;
 
+// @recomp: an attract demo plays the game's own recording of a player's controller, and the game checks each packet of
+// it against the running game: the low byte of its random seed (g_randomSeed), which the recording keeps, and a sum of
+// the packet's bytes. A wider view puts more guards and props on screen, which draws other random numbers, so the seeds
+// part and the demo faded to the title a few seconds in. The seed check is left out, so a demo plays to its end; its
+// guards act on their own, and the packet's sum and a key press still end it.
+struct ramrom_blockbuf {
+    s8 stick_x;
+    s8 stick_y;
+    u8 button_low;
+    u8 button_high;
+};
+
+struct ramrom_seed {
+    u8 speedframes;
+    u8 count;
+    u8 randseed;
+    u8 check;
+};
+
+struct contsample {
+    OSContPad pads[MAXCONTROLLERS];
+};
+
+#define CONTSAMPLE_LEN 20
+
+extern ramromfilestructure* ptr_active_demofile;
+extern struct ramrom_seed* ramrom_blkbuf_2;
+extern struct ramrom_blockbuf* ramrom_blkbuf_3;
+extern s32 prev_keypresses;
+void ramromFadeToTitle(void);
+void joySetContDataIndex(s32 index);
+
+RECOMP_PATCH s32 ramrom_replay_handler(struct contsample* arg0, s32 arg1) {
+    s32 var_a3;
+    s32 var_a0;
+    struct ramrom_blockbuf* temp_v0;
+    u8 var_t0 = 0;
+    s32 temp_a2 = (s32) ptr_active_demofile->size_cmds;
+    s32 temp_t2 = ramrom_blkbuf_2->count;
+
+    for (var_a3 = 0; var_a3 < temp_t2; var_a3++) {
+        arg1 = (s32) (arg1 + 1) % CONTSAMPLE_LEN;
+
+        for (var_a0 = 0; var_a0 < MAXCONTROLLERS; var_a0++) {
+            if (var_a0 < temp_a2) {
+                temp_v0 = ramrom_blkbuf_3 + (var_a3 * temp_a2) + var_a0;
+
+                arg0->pads[arg1 * 4 + var_a0].stick_x = temp_v0->stick_x;
+                arg0->pads[arg1 * 4 + var_a0].stick_y = temp_v0->stick_y;
+                arg0->pads[arg1 * 4 + var_a0].button = (temp_v0->button_high << 8) | temp_v0->button_low;
+
+                var_t0 += (u8) ((u8) temp_v0->stick_x + (u8) temp_v0->stick_y + temp_v0->button_low +
+                                temp_v0->button_high);
+            } else {
+                arg0->pads[arg1 * 4 + var_a0].stick_x = 0;
+                arg0->pads[arg1 * 4 + var_a0].stick_y = 0;
+                arg0->pads[arg1 * 4 + var_a0].button = 0;
+            }
+        }
+    }
+
+    var_t0 += (u8) ((u8) ramrom_blkbuf_2->speedframes + (u8) ramrom_blkbuf_2->count + ramrom_blkbuf_2->randseed);
+    if (ramrom_blkbuf_2->check != var_t0) {
+        ramromFadeToTitle();
+    }
+
+    joySetContDataIndex(0);
+
+    if (joyGetButtonsPressedThisFrame(0, 0xFFFF) != 0) {
+        ramromFadeToTitle();
+        prev_keypresses = TRUE;
+    }
+
+    joySetContDataIndex(1);
+
+    return arg1;
+}
+
 void waitForNextFrame2();  // @theboy181 - Improtant for proper fps
 Gfx* originTagFrame(Gfx* gdl); // patches/origin_interpolation.c
 #if 1

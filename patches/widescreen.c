@@ -188,7 +188,7 @@ RECOMP_PATCH void bgUpdateCurrentPlayerScreenMinMax(void) /* @theboy181 - WS hac
 {
     f32 fx, fy, fwidth, fheight;
 
-    if (demoMode != 0 || (g_StageNum == LEVELID_JUNGLE && intro_camera_index == CAMERAMODE_INTRO)) {
+    if (g_StageNum == LEVELID_JUNGLE && intro_camera_index == CAMERAMODE_INTRO) {
         /* Use global bgViewRelated values (original min/max) */
         fx = (f32) bgViewRelated[0];
         fy = (f32) bgViewRelated[1];
