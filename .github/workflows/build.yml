@@ -1,10 +1,13 @@
-# Builds the clean (no game code) variant for macOS on Apple Silicon, Linux x86_64 / Steam Deck and Windows x64.
+# Builds the clean (no game code) variant for macOS on Apple Silicon, Linux x86_64 / Steam Deck and Windows x64,
+# for every pull request and every push to main, and releases from main.
 #
-# Run it from the Actions tab to get the three packages as run artifacts. To release, run it on main with a
-# version (1.2.0): it builds, tags that commit v1.2.0 and puts all three packages on a draft release, to be checked
-# and published by hand. The version has to match version_string in src/main/main.cpp. Releasing from main
-# rather than by pushing a tag matters for speed: a tag run can only reuse compiler caches saved on main or on
-# that same tag, so a pushed tag always builds from cold. Pushing a v* tag by hand still works.
+# Releasing is a merge: a push to main whose version_string in src/main/main.cpp has no tag yet (a PR that
+# bumps it to 1.6.0) builds, tags that commit v1.6.0 and publishes a release with all three packages and notes
+# from the PRs since the last one. A push that leaves the version alone only builds, and its packages are the
+# run's artifacts. Running it from the Actions tab does the same for the branch it's run on (only main
+# releases), and so does re-running a failed release, since nothing is tagged until all three have built.
+# Releasing from main rather than by pushing a tag matters for speed: a tag run can only reuse compiler caches
+# saved on main or on that same tag, so a pushed tag always builds from cold. Pushing a v* tag by hand still works.
 #
 # A clean build ships no game code, but it still translates the game's audio microcode (aspMain) at build
 # time, and that is the only part of the ROM it reads: 0xDC0 bytes at offset 0x22C80 of the TLBFREE ROM.
@@ -14,25 +17,26 @@
 #   dd if=ge007.tlbfree.z64 bs=1 skip=$((0x22C80)) count=$((0xDC0)) status=none | base64 -w0 \
 #     | gh secret set ASP_MICROCODE_B64 --repo podulator/GoldenEye64Recomp
 #
-# There is no pull request trigger, so the secret is never exposed to code from forks.
+# GitHub gives a pull request from a fork no secrets, so the secret is never exposed to code from forks. Such a
+# build lays zeros where the microcode goes: it compiles, links and packages everything a release does, but
+# plays no sound, so its packages aren't uploaded.
 name: build
 
 on:
+  pull_request:
   push:
+    branches: [main]
     tags: ['v*', 'V*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'To release: the version, e.g. 1.2.0 (tags this commit and drafts a release). Empty: just build'
-        required: false
-        default: ''
 
 permissions:
   contents: read
 
+# A pull request's newer push cancels its older run. Main's runs queue instead, so a release is never cut off
+# halfway.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   ASP_SHA256: ae28967ac5ef8a746f761a24897988006ddde24212a333355dfba97d363ba7e0
@@ -59,28 +63,23 @@ jobs:
         id: tag
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -eu
+          version=$(sed -nE 's/^const std::string version_string = "([^"]*)";/\1/p' src/main/main.cpp)
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             tag=$GITHUB_REF_NAME
-          elif [ -n "${INPUT_VERSION:-}" ]; then
-            [ "$GITHUB_REF_NAME" = main ] || { echo "::error::release from main, not $GITHUB_REF_NAME"; exit 1; }
-            tag=v${INPUT_VERSION#[vV]}
-            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
-              echo "::error::the tag $tag already exists"
+            if [ "${tag#[vV]}" != "$version" ]; then
+              echo "::error::$tag doesn't match version_string \"$version\" in src/main/main.cpp: change one of them"
               exit 1
             fi
+          elif [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$GITHUB_REF_NAME" = main ] &&
+            ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" >/dev/null 2>&1; then
+            tag=v$version
           else
             echo "tag=" >> "$GITHUB_OUTPUT"
             echo "label=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            echo "No version given: building only."
+            echo "Building only: a release is a push to main whose version_string has no tag yet (v$version)."
             exit 0
-          fi
-          version=$(sed -nE 's/^const std::string version_string = "([^"]*)";/\1/p' src/main/main.cpp)
-          if [ "${tag#[vV]}" != "$version" ]; then
-            echo "::error::$tag doesn't match version_string \"$version\" in src/main/main.cpp: change one of them"
-            exit 1
           fi
           echo "Releasing $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -100,13 +99,22 @@ jobs:
       - name: Lay out the audio microcode
         env:
           ASP_MICROCODE_B64: ${{ secrets.ASP_MICROCODE_B64 }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -eu
-          [ -n "$ASP_MICROCODE_B64" ] || { echo "::error::the ASP_MICROCODE_B64 secret isn't set, see the top of this file"; exit 1; }
-          printf '%s' "$ASP_MICROCODE_B64" | base64 --decode > "$RUNNER_TEMP/asp.bin"
-          echo "$ASP_SHA256  $RUNNER_TEMP/asp.bin" | shasum -a 256 -c
           head -c $((0x22C80)) /dev/zero > ge007.tlbfree.z64
-          cat "$RUNNER_TEMP/asp.bin" >> ge007.tlbfree.z64
+          if [ -n "$ASP_MICROCODE_B64" ]; then
+            printf '%s' "$ASP_MICROCODE_B64" | base64 --decode > "$RUNNER_TEMP/asp.bin"
+            echo "$ASP_SHA256  $RUNNER_TEMP/asp.bin" | shasum -a 256 -c
+            cat "$RUNNER_TEMP/asp.bin" >> ge007.tlbfree.z64
+          elif [ -z "$TAG" ]; then
+            echo "::warning::no ASP_MICROCODE_B64 secret (a pull request from a fork): zeros for the audio microcode, so this build plays no sound and isn't uploaded"
+            head -c $((0xDC0)) /dev/zero >> ge007.tlbfree.z64
+            echo "SILENT_BUILD=1" >> "$GITHUB_ENV"
+          else
+            echo "::error::the ASP_MICROCODE_B64 secret isn't set, see the top of this file"
+            exit 1
+          fi
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
@@ -142,7 +150,8 @@ jobs:
           ditto -c -k --norsrc --noextattr --noacl --keepParent "package/GoldenEye 007 Recompiled.app" \
             "package/GoldenEye64Recomp-$VERSION-macOS-arm64.zip"
 
-      - uses: actions/upload-artifact@v7
+      - if: env.SILENT_BUILD != '1'
+        uses: actions/upload-artifact@v7
         with:
           name: macos-arm64
           path: package/*.zip
@@ -162,13 +171,22 @@ jobs:
       - name: Lay out the audio microcode
         env:
           ASP_MICROCODE_B64: ${{ secrets.ASP_MICROCODE_B64 }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -eu
-          [ -n "$ASP_MICROCODE_B64" ] || { echo "::error::the ASP_MICROCODE_B64 secret isn't set, see the top of this file"; exit 1; }
-          printf '%s' "$ASP_MICROCODE_B64" | base64 --decode > "$RUNNER_TEMP/asp.bin"
-          echo "$ASP_SHA256  $RUNNER_TEMP/asp.bin" | sha256sum -c
           head -c $((0x22C80)) /dev/zero > ge007.tlbfree.z64
-          cat "$RUNNER_TEMP/asp.bin" >> ge007.tlbfree.z64
+          if [ -n "$ASP_MICROCODE_B64" ]; then
+            printf '%s' "$ASP_MICROCODE_B64" | base64 --decode > "$RUNNER_TEMP/asp.bin"
+            echo "$ASP_SHA256  $RUNNER_TEMP/asp.bin" | sha256sum -c
+            cat "$RUNNER_TEMP/asp.bin" >> ge007.tlbfree.z64
+          elif [ -z "$TAG" ]; then
+            echo "::warning::no ASP_MICROCODE_B64 secret (a pull request from a fork): zeros for the audio microcode, so this build plays no sound and isn't uploaded"
+            head -c $((0xDC0)) /dev/zero >> ge007.tlbfree.z64
+            echo "SILENT_BUILD=1" >> "$GITHUB_ENV"
+          else
+            echo "::error::the ASP_MICROCODE_B64 secret isn't set, see the top of this file"
+            exit 1
+          fi
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
@@ -213,7 +231,8 @@ jobs:
           # A tarball, so the executable bits survive the artifact upload.
           tar -czf "package/GoldenEye64Recomp-$VERSION-Linux-x86_64-SteamDeck.tar.gz" -C package GoldenEye64Recomp
 
-      - uses: actions/upload-artifact@v7
+      - if: env.SILENT_BUILD != '1'
+        uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64-steamdeck
           path: package/*.tar.gz
@@ -240,13 +259,22 @@ jobs:
       - name: Lay out the audio microcode
         env:
           ASP_MICROCODE_B64: ${{ secrets.ASP_MICROCODE_B64 }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -eu
-          [ -n "$ASP_MICROCODE_B64" ] || { echo "::error::the ASP_MICROCODE_B64 secret isn't set, see the top of this file"; exit 1; }
-          printf '%s' "$ASP_MICROCODE_B64" | base64 --decode > "$RUNNER_TEMP/asp.bin"
-          echo "$ASP_SHA256  $RUNNER_TEMP/asp.bin" | sha256sum -c
           head -c $((0x22C80)) /dev/zero > ge007.tlbfree.z64
-          cat "$RUNNER_TEMP/asp.bin" >> ge007.tlbfree.z64
+          if [ -n "$ASP_MICROCODE_B64" ]; then
+            printf '%s' "$ASP_MICROCODE_B64" | base64 --decode > "$RUNNER_TEMP/asp.bin"
+            echo "$ASP_SHA256  $RUNNER_TEMP/asp.bin" | sha256sum -c
+            cat "$RUNNER_TEMP/asp.bin" >> ge007.tlbfree.z64
+          elif [ -z "$TAG" ]; then
+            echo "::warning::no ASP_MICROCODE_B64 secret (a pull request from a fork): zeros for the audio microcode, so this build plays no sound and isn't uploaded"
+            head -c $((0xDC0)) /dev/zero >> ge007.tlbfree.z64
+            echo "SILENT_BUILD=1" >> "$GITHUB_ENV"
+          else
+            echo "::error::the ASP_MICROCODE_B64 secret isn't set, see the top of this file"
+            exit 1
+          fi
           echo "CCACHE_DIR=$(cygpath -w ~/.ccache)" >> "$GITHUB_ENV"
 
       # The gameplay patches are MIPS code: MSYS2's clang64 clang has the target (LLVM's Windows release doesn't),
@@ -292,7 +320,8 @@ jobs:
           objdump -p package/GoldenEye64Recomp/GoldenRecomp.exe | sed -n 's/^\tDLL Name: //p' | sort -f
           (cd package && 7z a -tzip -bso0 "GoldenEye64Recomp-$VERSION-Windows-x64.zip" GoldenEye64Recomp)
 
-      - uses: actions/upload-artifact@v7
+      - if: env.SILENT_BUILD != '1'
+        uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: package/*.zip
@@ -320,9 +349,9 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" >/dev/null
 
-      - name: Draft the release
+      - name: Publish the release
         env:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "GoldenEye64Recomp $TAG" --generate-notes
