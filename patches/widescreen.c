@@ -509,6 +509,109 @@ RECOMP_PATCH Gfx* titleRenderFolderMenuBackgroundLines(Gfx* gdl, s32 image, s32 
 }
 #endif
 
+// Mode, mission and difficulty select, the 007 options and the briefing draw the open folder close up, under the
+// front end's 4:3 projection, which RT64 widens: the folder's cover, which fills the 4:3 view, ends short of a wider
+// view's edges. A wider view gets the cover's texture across the whole view first, behind the folder, so the cover goes
+// on to the window's edges: the folder model's own texture (its 11th), at the size, phase and shade the model draws it,
+// measured from the game's own frames. The model maps it with t upward, so the rectangle steps t back down the screen.
+// Its texels a front-end unit (5.10) and phase at the view's middle and top (10.5) are for a texture that repeats every
+// 64 texels.
+#if 1
+#define COVER_TEXTURE 10
+#define COVER_DSDX 281
+#define COVER_DTDY 303
+#define COVER_S_MIDDLE 1773
+#define COVER_T_TOP 781
+
+extern struct coord3d folderpositions[];
+extern ModelRenderData D_8002AF84;
+extern f32 D_8002AFC4;
+extern f32 D_8002AFC8;
+extern f32 D_8002AFCC;
+void matrix_4x4_set_lookat_target(Mtxf* matrix, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, f32 lookz,
+                                  f32 upx, f32 upy, f32 upz);
+void subdraw(ModelRenderData* renderdata, struct Model* model);
+
+static Gfx* folderCover(Gfx* gdl) {
+    ModelFileHeader* obj = walletinst[0]->obj;
+    s32 half = (s32) (165.0f * recomp_get_aspect_ratio(4.0f / 3.0f)) + 1;
+
+    gEXEnable(gdl++);
+    gEXSetScissor(gdl++, G_SC_NON_INTERLACE, G_EX_ORIGIN_LEFT, G_EX_ORIGIN_RIGHT, 0, 0, 0, viGetY());
+    gDPPipeSync(gdl++);
+    gDPSetTextureLUT(gdl++, G_TT_NONE);
+    texSelect(&gdl, (struct sImageTableEntry*) &obj->Textures[COVER_TEXTURE], 4, 0, 0);
+    // texSelect's own modes are for triangles (its combiner takes the vertices' shade, which a rectangle hasn't).
+    gDPPipeSync(gdl++);
+    gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+    gDPSetRenderMode(gdl++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+    gDPSetTexturePersp(gdl++, G_TP_NONE);
+    gDPSetTextureLOD(gdl++, G_TL_TILE);
+    gDPSetTextureConvert(gdl++, G_TC_FILT);
+    gDPSetTextureFilter(gdl++, G_TF_BILERP);
+    gDPSetAlphaCompare(gdl++, G_AC_NONE);
+    gDPSetCombineMode(gdl++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
+    gDPSetPrimColor(gdl++, 0, 0, 212, 212, 162, 255);
+    gEXTextureRectangle(gdl++, G_EX_ORIGIN_CENTER, G_EX_ORIGIN_CENTER, -half * 4, 0, half * 4, 330 * 4,
+                        G_TX_RENDERTILE, COVER_S_MIDDLE - ((half * COVER_DSDX) >> 5), COVER_T_TOP, COVER_DSDX,
+                        -COVER_DTDY);
+    gDPPipeSync(gdl++);
+    gDPSetTexturePersp(gdl++, G_TP_PERSP);
+    gDPSetTextureLOD(gdl++, G_TL_LOD);
+    gDPSetScissor(gdl++, G_SC_NON_INTERLACE, 0, 0, viGetX(), viGetY());
+
+    return gdl;
+}
+
+RECOMP_PATCH Gfx* frontSetupMenuBackground(Gfx* DL) {
+    f32 x;
+    f32 y;
+    ModelRenderData renderdata;
+    s32 i;
+    Mtxf view;
+    Mtxf model;
+    Mtxf tmp;
+
+    // @recomp: the cover across the whole view, behind the folder
+    DL = folderCover(DL);
+
+    x = folderpositions[selected_folder_num].f[0];
+    y = folderpositions[selected_folder_num].f[1];
+
+    renderdata = D_8002AF84;
+
+    x += D_8002AFC4;
+    y += D_8002AFC8;
+
+    matrix_4x4_set_lookat_target(&view, x, y, 4000.0f + D_8002AFCC, x, y, 0.0f, 0.0f, 1.0f, 0.0f);
+    matrix_4x4_set_identity_and_position(&folderpositions[selected_folder_num], &model);
+    matrix_scalar_multiply(0.25f, model.m[0]);
+    matrix_4x4_multiply_in_place(&view, &model);
+
+    renderdata.unk_matrix = &model;
+    renderdata.mtxlist = dynAllocate(walletinst[0]->obj->numMatrices << 6);
+
+    matrix_4x4_copy(&model, renderdata.mtxlist);
+
+    walletinst[0]->render_pos = (RenderPosView*) renderdata.mtxlist;
+
+    renderdata.flags = 3;
+    renderdata.zbufferenabled = FALSE;
+    renderdata.gdl = DL;
+
+    subdraw(&renderdata, walletinst[0]);
+
+    DL = renderdata.gdl;
+
+    for (i = 0; i < walletinst[0]->obj->numMatrices; i++) {
+        matrix_4x4_copy(&((Mtxf*) walletinst[0]->render_pos)[i], &tmp);
+        matrix_4x4_f32_to_s32(&tmp, &((Mtxf*) walletinst[0]->render_pos)[i]);
+    }
+
+    return DL;
+}
+#endif
+
 #if 1
 extern s32 g_ContRumblePakInitState[4];
 extern OSMesgQueue g_ContInputMessageQueue;
